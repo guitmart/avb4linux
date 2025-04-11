@@ -1,7 +1,7 @@
 #!/bin/bash
 # Simple script to run igb_avb
 
-export AVBHOME=$HOME/.avb
+export AVBHOME=/home/martin/.avb
 export INTERFACE=$1
 export SAMPLERATE=$2
 

@@ -80,7 +80,9 @@ install: all
 	cp daemons/shaper/shaper_daemon $(HOME)/.avb
 	cp tools/avb-user $(HOME)/.avb
 	cp kernel-module/igb/igb_avb.ko $(HOME)/.avb
-	cp avb_up.sh /usr/local/bin
-	cp avb_down.sh /usr/local/bin
+	sudo cp avb_up.sh /usr/local/bin
+	sudo cp avb_down.sh /usr/local/bin
+	cp avb_up.sh $(HOME)/.avb
+	cp avb_down.sh $(HOME)/.avb
 
 .PHONY: FORCE
