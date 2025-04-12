@@ -772,7 +772,7 @@ void handle_stream_port_output_descriptor(int sock, char *buffer, int len)
 
    memset(&spo, 0, sizeof(spo));
 
-   spo.descriptor_type = JDKSAVDECC_DESCRIPTOR_STREAM_PORT_INPUT;
+   spo.descriptor_type = JDKSAVDECC_DESCRIPTOR_STREAM_PORT_OUTPUT;
    spo.descriptor_index = jdksavdecc_descriptor_stream_get_descriptor_index(buffer, 0x2A);
    spo.clock_domain_index = 0;
    spo.port_flags = JDKSAVDECC_DESCRIPTOR_STREAM_FLAG_CLOCK_SYNC_SOURCE;
@@ -1032,6 +1032,7 @@ void handle_acmp_connect_tx_command(int sock, char *buffer, int len)
 
    if (jdksavdecc_eui64_compare(&talker_guid, &entity_guid))
    {
+      printf("handle_acmp_connect_tx_command not equals &talker_guid, &entity_guid");
       return;
    }
 
@@ -1041,18 +1042,30 @@ void handle_acmp_connect_tx_command(int sock, char *buffer, int len)
    jdksavdecc_common_control_header_set_status(JDKSAVDECC_ACMP_STATUS_SUCCESS, buffer, HEADER_OFFSET);
 
    struct jdksavdecc_eui64 stream_id;
+   uint16_t talkerUniqueId = jdksavdecc_acmpdu_get_talker_unique_id(buffer, HEADER_OFFSET);
 
-   jdksavdecc_eui64_init_from_uint64(&stream_id, mac_to_stream_id(own_mac_address, 0));
+   jdksavdecc_eui64_init_from_uint64(&stream_id, mac_to_stream_id(OWN_MAC, talkerUniqueId));
    jdksavdecc_common_control_header_set_stream_id(stream_id, buffer, HEADER_OFFSET);
 
    struct jdksavdecc_eui48 dst_mac;
-
+   uint16_t listenerUniqueId = jdksavdecc_acmpdu_get_listener_unique_id(buffer, HEADER_OFFSET);
    jdksavdecc_eui48_init_from_uint64(&dst_mac, MCAST_BASE);
+   dst_mac.value[5] = dst_mac.value[5] + listenerUniqueId;
    jdksavdecc_acmpdu_set_stream_dest_mac(dst_mac, buffer, HEADER_OFFSET);
 
    jdksavdecc_acmpdu_set_connection_count(1, buffer, HEADER_OFFSET);
    jdksavdecc_acmpdu_set_stream_vlan_id(2, buffer, HEADER_OFFSET);
 
+   //   mrp_advertise_stream
+   //                  (stream_id.value,
+   //                     dst_mac.value,
+   //                     32 +
+   //                     channels_per_stream *
+   //                     bytes_per_sample *
+   //                     samples_per_interval,
+   //                     1,
+   //                     95,
+   //                     CLASS_A_VLAN, CLASS_A_PRIORITY);
    sendMsg(sock, buffer, len);
 }
 
@@ -1063,15 +1076,92 @@ void handle_acmp_connect_tx_response(int sock, char *buffer, int len)
    printf("talker %lx, entity %lx\n",
           jdksavdecc_eui64_convert_to_uint64(&talker_guid),
           jdksavdecc_eui64_convert_to_uint64(&entity_guid));
-   /*
-       if (jdksavdecc_eui64_compare(&talker_guid, &entity_guid))
-       {
-          return;
-       }
-   */
+
    memcpy(&buffer[MACLEN], MAC, MACLEN);
 
    jdksavdecc_common_control_header_set_control_data(JDKSAVDECC_ACMP_MESSAGE_TYPE_CONNECT_RX_RESPONSE, buffer, HEADER_OFFSET);
+   jdksavdecc_common_control_header_set_status(JDKSAVDECC_ACMP_STATUS_SUCCESS, buffer, HEADER_OFFSET);
+
+   sendMsg(sock, buffer, len);
+}
+
+void handle_acmp_disconnect_tx_command(int sock, char *buffer, int len)
+{
+   jdksavdecc_common_control_header_set_control_data(JDKSAVDECC_ACMP_MESSAGE_TYPE_DISCONNECT_TX_RESPONSE, buffer, HEADER_OFFSET);
+   jdksavdecc_common_control_header_set_status(JDKSAVDECC_ACMP_STATUS_SUCCESS, buffer, HEADER_OFFSET);
+
+   struct jdksavdecc_eui64 stream_id;
+   uint16_t talkerUniqueId = jdksavdecc_acmpdu_get_talker_unique_id(buffer, HEADER_OFFSET);
+   struct jdksavdecc_eui48 dst_mac;
+   uint16_t listenerUniqueId = jdksavdecc_acmpdu_get_listener_unique_id(buffer, HEADER_OFFSET);
+   jdksavdecc_eui48_init_from_uint64(&dst_mac, MCAST_BASE);
+   dst_mac.value[5] = dst_mac.value[5] + listenerUniqueId;
+   jdksavdecc_acmpdu_set_stream_dest_mac(dst_mac, buffer, HEADER_OFFSET);
+
+   // mrp_unadvertise_stream
+   //                  (stream_id.value,
+   //                     dst_mac.value,
+   //                     32 +
+   //                     channels_per_stream *
+   //                     bytes_per_sample *
+   //                     samples_per_interval,
+   //                     1,
+   //                     95,
+   //                     CLASS_A_VLAN, CLASS_A_PRIORITY);
+
+   sendMsg(sock, buffer, len);
+}
+
+void handle_acmp_disconnect_tx_response(int sock, char *buffer, int len)
+{
+   memcpy(&buffer[MACLEN], MAC, MACLEN);
+
+   jdksavdecc_common_control_header_set_control_data(JDKSAVDECC_ACMP_MESSAGE_TYPE_DISCONNECT_RX_RESPONSE, buffer, HEADER_OFFSET);
+   jdksavdecc_common_control_header_set_status(JDKSAVDECC_ACMP_STATUS_SUCCESS, buffer, HEADER_OFFSET);
+
+   struct jdksavdecc_eui64 streamId = jdksavdecc_common_control_header_get_stream_id(buffer, HEADER_OFFSET);
+   // send_leave(streamId.value);
+   sendMsg(sock, buffer, len);
+}
+
+void handle_acmp_get_tx_state_command(int sock, char *buffer, int len)
+{
+
+   memcpy(&buffer[MACLEN], MAC, MACLEN);
+
+   jdksavdecc_common_control_header_set_control_data(JDKSAVDECC_ACMP_MESSAGE_TYPE_GET_TX_STATE_RESPONSE, buffer, HEADER_OFFSET);
+   jdksavdecc_common_control_header_set_status(JDKSAVDECC_ACMP_STATUS_SUCCESS, buffer, HEADER_OFFSET);
+
+   sendMsg(sock, buffer, len);
+}
+
+void handle_acmp_connect_rx_command(int sock, char *buffer, int len)
+{
+   struct jdksavdecc_eui64 talker_guid = jdksavdecc_acmpdu_get_talker_entity_id(buffer, HEADER_OFFSET);
+
+   printf("handle_acmp_connect_rx_command talker %lx\n",
+          jdksavdecc_eui64_convert_to_uint64(&talker_guid));
+
+   memcpy(&buffer[MACLEN], MAC, MACLEN);
+
+   uint16_t listenerUniqueId = jdksavdecc_acmpdu_get_talker_unique_id(buffer, HEADER_OFFSET);
+
+   jdksavdecc_common_control_header_set_control_data(JDKSAVDECC_ACMP_MESSAGE_TYPE_CONNECT_TX_COMMAND, buffer, HEADER_OFFSET);
+   jdksavdecc_common_control_header_set_status(JDKSAVDECC_ACMP_STATUS_SUCCESS, buffer, HEADER_OFFSET);
+   jdksavdecc_acmpdu_set_listener_unique_id(listenerUniqueId, buffer, HEADER_OFFSET);
+   sendMsg(sock, buffer, len);
+}
+
+void handle_acmp_disconnect_rx_command(int sock, char *buffer, int len)
+{
+   struct jdksavdecc_eui64 talker_guid = jdksavdecc_acmpdu_get_talker_entity_id(buffer, HEADER_OFFSET);
+
+   printf("handle_acmp_disconnect_rx_command talker %lx\n",
+          jdksavdecc_eui64_convert_to_uint64(&talker_guid));
+
+   memcpy(&buffer[MACLEN], MAC, MACLEN);
+
+   jdksavdecc_common_control_header_set_control_data(JDKSAVDECC_ACMP_MESSAGE_TYPE_DISCONNECT_TX_COMMAND, buffer, HEADER_OFFSET);
    jdksavdecc_common_control_header_set_status(JDKSAVDECC_ACMP_STATUS_SUCCESS, buffer, HEADER_OFFSET);
 
    sendMsg(sock, buffer, len);
@@ -1092,8 +1182,8 @@ void handle_acmp_get_rx_state_command(int sock, char *buffer, int len)
    jdksavdecc_common_control_header_set_status(JDKSAVDECC_ACMP_STATUS_SUCCESS, buffer, HEADER_OFFSET);
 
    struct jdksavdecc_eui64 stream_id;
-
-   uint64_t uint64_remote_stream_id = mac_to_stream_id(AVB_DEVICE_SOURCE_MAC, 0);
+   uint16_t listenerUniqueId = jdksavdecc_acmpdu_get_listener_unique_id(buffer, HEADER_OFFSET);
+   uint64_t uint64_remote_stream_id = mac_to_stream_id(AVB_DEVICE_SOURCE_MAC, listenerUniqueId);
 
    jdksavdecc_eui64_init_from_uint64(&stream_id, uint64_remote_stream_id);
    jdksavdecc_common_control_header_set_stream_id(stream_id, buffer, HEADER_OFFSET);
@@ -1106,14 +1196,26 @@ void handle_acmp_get_rx_state_command(int sock, char *buffer, int len)
    jdksavdecc_acmpdu_set_talker_entity_id(talker_entity_id, buffer, HEADER_OFFSET);
 
    struct jdksavdecc_eui48 dst_mac;
-
    uint64_t uint64_remote_destination_mac = AVB_DEVICE_TALKER_MAC_BASE;
 
    jdksavdecc_eui48_init_from_uint64(&dst_mac, uint64_remote_destination_mac);
+   // dst_mac.value[5] = dst_mac.value[5] + listenerUniqueId;
    jdksavdecc_acmpdu_set_stream_dest_mac(dst_mac, buffer, HEADER_OFFSET);
 
    jdksavdecc_acmpdu_set_connection_count(1, buffer, HEADER_OFFSET);
    jdksavdecc_acmpdu_set_stream_vlan_id(2, buffer, HEADER_OFFSET);
+
+   sendMsg(sock, buffer, len);
+}
+
+void handle_acmp_get_tx_connection_command(int sock, char *buffer, int len)
+{
+   struct jdksavdecc_eui64 talker_guid = jdksavdecc_acmpdu_get_talker_entity_id(buffer, HEADER_OFFSET);
+
+   memcpy(&buffer[MACLEN], MAC, MACLEN);
+
+   jdksavdecc_common_control_header_set_control_data(JDKSAVDECC_ACMP_MESSAGE_TYPE_GET_TX_CONNECTION_RESPONSE, buffer, HEADER_OFFSET);
+   jdksavdecc_common_control_header_set_status(JDKSAVDECC_ACMP_STATUS_SUCCESS, buffer, HEADER_OFFSET);
 
    sendMsg(sock, buffer, len);
 }
@@ -1134,17 +1236,17 @@ void handle_acmp(int sock, char *buffer, int len)
    }
    case JDKSAVDECC_ACMP_MESSAGE_TYPE_DISCONNECT_TX_COMMAND:
    {
-      // handle_acmp_disconnect_tx_command(sock, buffer, len);
+      handle_acmp_disconnect_tx_command(sock, buffer, len);
       break;
    }
    case JDKSAVDECC_ACMP_MESSAGE_TYPE_DISCONNECT_TX_RESPONSE:
    {
-      // handle_acmp_disconnect_tx_command(sock, buffer, len);
+      handle_acmp_disconnect_tx_response(sock, buffer, len);
       break;
    }
    case JDKSAVDECC_ACMP_MESSAGE_TYPE_GET_TX_STATE_COMMAND:
    {
-      // handle_acmp_get_tx_state_command(sock, buffer, len);
+      handle_acmp_get_tx_state_command(sock, buffer, len);
       break;
    }
    case JDKSAVDECC_ACMP_MESSAGE_TYPE_GET_TX_STATE_RESPONSE:
@@ -1154,7 +1256,7 @@ void handle_acmp(int sock, char *buffer, int len)
    }
    case JDKSAVDECC_ACMP_MESSAGE_TYPE_CONNECT_RX_COMMAND:
    {
-      // handle_acmp_connect_rx_command(sock, buffer, len);
+      handle_acmp_connect_rx_command(sock, buffer, len);
       break;
    }
    case JDKSAVDECC_ACMP_MESSAGE_TYPE_CONNECT_RX_RESPONSE:
@@ -1164,7 +1266,7 @@ void handle_acmp(int sock, char *buffer, int len)
    }
    case JDKSAVDECC_ACMP_MESSAGE_TYPE_DISCONNECT_RX_COMMAND:
    {
-      // handle_acmp_disconnect_rx_command(sock, buffer, len);
+      handle_acmp_disconnect_rx_command(sock, buffer, len);
       break;
    }
    case JDKSAVDECC_ACMP_MESSAGE_TYPE_DISCONNECT_RX_RESPONSE:
@@ -1174,7 +1276,7 @@ void handle_acmp(int sock, char *buffer, int len)
    }
    case JDKSAVDECC_ACMP_MESSAGE_TYPE_GET_RX_STATE_COMMAND:
    {
-      // handle_acmp_get_rx_state_command(sock, buffer, len);
+      handle_acmp_get_rx_state_command(sock, buffer, len);
       break;
    }
    case JDKSAVDECC_ACMP_MESSAGE_TYPE_GET_RX_STATE_RESPONSE:
@@ -1184,7 +1286,7 @@ void handle_acmp(int sock, char *buffer, int len)
    }
    case JDKSAVDECC_ACMP_MESSAGE_TYPE_GET_TX_CONNECTION_COMMAND:
    {
-      // handle_acmp_get_tx_connection_command(sock, buffer, len);
+      handle_acmp_get_tx_connection_command(sock, buffer, len);
       break;
    }
    case JDKSAVDECC_ACMP_MESSAGE_TYPE_GET_TX_CONNECTION_RESPONSE:
@@ -1199,6 +1301,29 @@ void handle_acmp(int sock, char *buffer, int len)
 
 void handle_avpdu(AVPDU_HEADER *p)
 {
+   // printf("cavpdu streamId: %02x%02x%02x%02x%02x%02x%02x%02x",
+   // (unsigned char)p->stream_id[0],
+   // (unsigned char)p->stream_id[1],
+   // (unsigned char)p->stream_id[2],
+   // (unsigned char)p->stream_id[3],
+   // (unsigned char)p->stream_id[4],
+   // (unsigned char)p->stream_id[5],
+   // (unsigned char)p->stream_id[6],
+   // (unsigned char)p->stream_id[7]);
+   // printf("cavpdu dest: %02x%02x%02x%02x%02x%02x",
+   // (unsigned char)p->dest[0],
+   // (unsigned char)p->dest[1],
+   // (unsigned char)p->dest[2],
+   // (unsigned char)p->dest[3],
+   // (unsigned char)p->dest[4],
+   // (unsigned char)p->dest[5]);
+   // printf("cavpdu src: %02x%02x%02x%02x%02x%02x",
+   // (unsigned char)p->src[0],
+   // (unsigned char)p->src[1],
+   // (unsigned char)p->src[2],
+   // (unsigned char)p->src[3],
+   // (unsigned char)p->src[4],
+   // (unsigned char)p->src[5]);
 }
 
 void handle_entity_discover()
@@ -1679,16 +1804,15 @@ int main(int argc, char **argv)
          uint64_to_array8(mac_to_stream_id(OWN_MAC, streamUniqueId), ox_stream);
          uint64_to_array6(MCAST_BASE, ox_macTemp);
          ox_macTemp[5] = ox_macTemp[5] + streamUniqueId;
-         rc = mrp_unadvertise_stream
-                     (ox_stream,
-                        ox_macTemp,
-                        32 +
-                        channels_per_stream *
-                        bytes_per_sample *
-                        samples_per_interval,
-                        1,
-                        95, 
-                        CLASS_A_VLAN, CLASS_A_PRIORITY);
+         rc = mrp_unadvertise_stream(ox_stream,
+                                     ox_macTemp,
+                                     32 +
+                                         channels_per_stream *
+                                             bytes_per_sample *
+                                             samples_per_interval,
+                                     1,
+                                     95,
+                                     CLASS_A_VLAN, CLASS_A_PRIORITY);
 
          send_leave(ix_stream);
       }
