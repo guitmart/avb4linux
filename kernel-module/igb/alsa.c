@@ -48,7 +48,7 @@ static struct snd_pcm_hardware snd_avb_playback_hw = {
         .rate_min =         44100,
         .rate_max =         192000,
         .channels_min =     8,
-        .channels_max =     8,
+        .channels_max =     128,
         .buffer_bytes_max = 1200*4*128*4,
         .period_bytes_min = 6*4*8,
         .period_bytes_max = 1200*4*128,
@@ -79,7 +79,7 @@ static struct snd_pcm_hardware snd_avb_capture_hw = {
         .rate_min =         44100,
         .rate_max =         192000,
         .channels_min =     8,
-        .channels_max =     8,
+        .channels_max =     128,
         .buffer_bytes_max = 1200*4*128*4,
         .period_bytes_min = 6*4*8,
         .period_bytes_max = 1200*4*128,
@@ -432,11 +432,16 @@ static int snd_avb_new_pcm(struct igb_adapter *adapter)
 
         memset(adapter->tx_addr, 0, 4096*16*4);
 
+        int j = 0;
+
         for (i=0; i<MAXDESCRIPTORS; i++)
         {
-           void *p = adapter->tx_addr;
-
-           init_avpdu_header(p+i*1024, dest, src, stream_id, channels, adapter->rate);
+            j = i % NUMBER_OF_STREAMS;
+            stream_id[7] = j;
+            dest[5] = j;
+            void *p = adapter->tx_addr;
+            
+            init_avpdu_header(p+i*1024, dest, src, stream_id, channels, adapter->rate);
         }
 
         return 0;
@@ -454,11 +459,16 @@ int snd_avb_probe(struct igb_adapter *adapter, int samplerate)
                 0x81, 0x00, 0x60, 0x02, 0x22, 0xf0,
                 0x00, 0x00, 0x00, 0x00, 0x00, 0x00 };
 
-        u8 filter_mask[] = { 0xff, 0xff, 0x03 };
+        u8 filter_mask[] = { 0xcf, 0xff, 0x03 };
 
         adapter->card = 0;
         adapter->capture = 0;
         adapter->playback = 0;
+
+        snd_avb_capture_hw.channels_min = NUMBER_OF_STREAMS * 8;
+        snd_avb_capture_hw.channels_max = NUMBER_OF_STREAMS * 8;
+        snd_avb_playback_hw.channels_min = NUMBER_OF_STREAMS * 8;
+        snd_avb_playback_hw.channels_max = NUMBER_OF_STREAMS * 8;
 
         switch (samplerate)
         {

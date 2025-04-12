@@ -1,4 +1,5 @@
 /* configuration data for the AVB stream */
+#define NUMBER_OF_STREAMS 3
 
 /* currently we use the locally administered MAAP MAC address base for our Talker stream */
 
