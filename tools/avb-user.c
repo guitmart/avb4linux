@@ -54,6 +54,7 @@
 
 #include <jdksavdecc.h>
 #include <../kernel-module/igb/avb-config.h>
+#include <alsa/asoundlib.h>
 
 #define CLASS_A_ID 6
 #define CLASS_A_VLAN 2
@@ -100,7 +101,7 @@ int ifindex = 0;
 #define HEADER_OFFSET 14
 #define MACLEN 6
 
-#define NUM_STREAMS 16
+#define NUM_STREAMS NUMBER_OF_STREAMS
 
 #define STREAM_PORT_INPUT_BASE_CLUSTER 0
 #define STREAM_PORT_INPUT_BASE_MAP 0
@@ -235,11 +236,11 @@ void fill_jdksavdecc_descriptor_entity()
        JDKSAVDECC_ADP_ENTITY_CAPABILITY_GPTP_SUPPORTED |
        JDKSAVDECC_ADP_ENTITY_CAPABILITY_AEM_IDENTIFY_CONTROL_INDEX_VALID |
        JDKSAVDECC_ADP_ENTITY_CAPABILITY_AEM_INTERFACE_INDEX_VALID;
-   entity.talker_stream_sources = 16;
+   entity.talker_stream_sources = NUMBER_OF_STREAMS;
    entity.talker_capabilities =
        JDKSAVDECC_ADP_TALKER_CAPABILITY_IMPLEMENTED |
        JDKSAVDECC_ADP_TALKER_CAPABILITY_AUDIO_SOURCE;
-   entity.listener_stream_sinks = 16;
+   entity.listener_stream_sinks = NUMBER_OF_STREAMS;
    entity.listener_capabilities =
        JDKSAVDECC_ADP_LISTENER_CAPABILITY_IMPLEMENTED |
        JDKSAVDECC_ADP_LISTENER_CAPABILITY_AUDIO_SINK;
@@ -275,9 +276,9 @@ void fill_jdksavdecc_descriptor_configuration()
    configuration_descriptors[0] = htons(JDKSAVDECC_DESCRIPTOR_AUDIO_UNIT);
    configuration_descriptors[1] = htons(1);
    configuration_descriptors[2] = htons(JDKSAVDECC_DESCRIPTOR_STREAM_INPUT);
-   configuration_descriptors[3] = htons(16);
+   configuration_descriptors[3] = htons(NUMBER_OF_STREAMS);
    configuration_descriptors[4] = htons(JDKSAVDECC_DESCRIPTOR_STREAM_OUTPUT);
-   configuration_descriptors[5] = htons(16);
+   configuration_descriptors[5] = htons(NUMBER_OF_STREAMS);
    configuration_descriptors[6] = htons(JDKSAVDECC_DESCRIPTOR_AVB_INTERFACE);
    configuration_descriptors[7] = htons(1);
    configuration_descriptors[8] = htons(JDKSAVDECC_DESCRIPTOR_CLOCK_SOURCE);
@@ -303,9 +304,9 @@ void fill_jdksavdecc_descriptor_audio_unit()
    jdksavdecc_string_set_from_cstr(&audio_unit.object_name, "");
    audio_unit.localized_description = 1;
    audio_unit.clock_domain_index = 0;
-   audio_unit.number_of_stream_input_ports = 16;
+   audio_unit.number_of_stream_input_ports = NUMBER_OF_STREAMS;
    audio_unit.base_stream_input_port = 0;
-   audio_unit.number_of_stream_output_ports = 16;
+   audio_unit.number_of_stream_output_ports = NUMBER_OF_STREAMS;
    audio_unit.base_stream_output_port = 0;
    audio_unit.number_of_external_input_ports = 0;
    audio_unit.base_external_input_port = 0;
@@ -347,8 +348,8 @@ void fill_jdksavdecc_descriptor_audio_unit()
    samplerates[5] = htonl(192000);
 };
 
-struct jdksavdecc_descriptor_stream stream_input[16];
-struct jdksavdecc_descriptor_stream stream_output[16];
+struct jdksavdecc_descriptor_stream stream_input[NUMBER_OF_STREAMS];
+struct jdksavdecc_descriptor_stream stream_output[NUMBER_OF_STREAMS];
 
 uint64_t STREAM_INPUT_FORMAT_0 = 0x000800600801A000;
 uint64_t STREAM_INPUT_FORMAT_1 = 0x000800600802A000;
@@ -397,7 +398,7 @@ void fill_jdksavdecc_descriptor_streams()
       break;
    }
 
-   for (i = 0; i < 16; i++)
+   for (i = 0; i < NUMBER_OF_STREAMS; i++)
    {
       sprintf(name, "%i", i);
       stream_input[i].descriptor_type = JDKSAVDECC_DESCRIPTOR_STREAM_INPUT;
@@ -964,6 +965,11 @@ void handle_aem_command(int sock, char *buffer, int len)
       handle_unimplemented_aem_command(sock, buffer, len);
       break;
    }
+   case JDKSAVDECC_AEM_COMMAND_SET_STREAM_FORMAT:
+   {
+      sendMsg(sock, buffer, len);
+      break;
+   }
    default:
    {
       handle_unimplemented_aem_command(sock, buffer, len);
@@ -1056,6 +1062,17 @@ void handle_acmp_connect_tx_command(int sock, char *buffer, int len)
    jdksavdecc_acmpdu_set_connection_count(1, buffer, HEADER_OFFSET);
    jdksavdecc_acmpdu_set_stream_vlan_id(2, buffer, HEADER_OFFSET);
 
+   //    snd_pcm_t *handle;
+   //    int err;
+
+   // // Ouvre le substream de lecture (playback)
+   // printf(" playback snd_pcm_open du substream ALSA: avb\n");
+   // err = snd_pcm_open(&handle, "hw:0,0", SND_PCM_STREAM_PLAYBACK, 0);
+   // if (err < 0) {
+   //     printf("Erreur d'ouverture du substream ALSA: avb\n");
+   // }
+
+   // }
    //   mrp_advertise_stream
    //                  (stream_id.value,
    //                     dst_mac.value,
@@ -1139,16 +1156,24 @@ void handle_acmp_connect_rx_command(int sock, char *buffer, int len)
 {
    struct jdksavdecc_eui64 talker_guid = jdksavdecc_acmpdu_get_talker_entity_id(buffer, HEADER_OFFSET);
 
-   printf("handle_acmp_connect_rx_command talker %lx\n",
-          jdksavdecc_eui64_convert_to_uint64(&talker_guid));
+   // printf("handle_acmp_connect_rx_command talker %lx\n",
+   //        jdksavdecc_eui64_convert_to_uint64(&talker_guid));
 
    memcpy(&buffer[MACLEN], MAC, MACLEN);
 
-   uint16_t listenerUniqueId = jdksavdecc_acmpdu_get_talker_unique_id(buffer, HEADER_OFFSET);
+   uint16_t listenerUniqueId = jdksavdecc_acmpdu_get_listener_unique_id(buffer, HEADER_OFFSET);
 
    jdksavdecc_common_control_header_set_control_data(JDKSAVDECC_ACMP_MESSAGE_TYPE_CONNECT_TX_COMMAND, buffer, HEADER_OFFSET);
    jdksavdecc_common_control_header_set_status(JDKSAVDECC_ACMP_STATUS_SUCCESS, buffer, HEADER_OFFSET);
    jdksavdecc_acmpdu_set_listener_unique_id(listenerUniqueId, buffer, HEADER_OFFSET);
+   // snd_pcm_t *handle;
+   // int err;
+   //    // Ouvre le substream de lecture (capture
+   //    printf("capture snd_pcm_open du substream ALSA: avb\n");
+   //    err = snd_pcm_open(&handle, "hw:0,0", SND_PCM_STREAM_CAPTURE, 0);
+   //    if (err < 0) {
+   //        printf("Erreur d'ouverture du substream ALSA: avb\n");
+   //    }
    sendMsg(sock, buffer, len);
 }
 
@@ -1163,6 +1188,15 @@ void handle_acmp_disconnect_rx_command(int sock, char *buffer, int len)
 
    jdksavdecc_common_control_header_set_control_data(JDKSAVDECC_ACMP_MESSAGE_TYPE_DISCONNECT_TX_COMMAND, buffer, HEADER_OFFSET);
    jdksavdecc_common_control_header_set_status(JDKSAVDECC_ACMP_STATUS_SUCCESS, buffer, HEADER_OFFSET);
+
+   // snd_pcm_t *handle;
+   // int err;
+   //    // Ouvre le substream de lecture (capture
+   //    printf("capture snd_pcm_open du substream ALSA: avb\n");
+   //    err = snd_pcm_close(&handle);
+   //    if (err < 0) {
+   //        printf("Erreur d'ouverture du substream ALSA: avb\n");
+   //    }
 
    sendMsg(sock, buffer, len);
 }
@@ -1600,11 +1634,11 @@ int main(int argc, char **argv)
        JDKSAVDECC_ADP_ENTITY_CAPABILITY_GPTP_SUPPORTED |
        JDKSAVDECC_ADP_ENTITY_CAPABILITY_AEM_IDENTIFY_CONTROL_INDEX_VALID |
        JDKSAVDECC_ADP_ENTITY_CAPABILITY_AEM_INTERFACE_INDEX_VALID;
-   adpdu.talker_stream_sources = 16;
+   adpdu.talker_stream_sources = NUMBER_OF_STREAMS;
    adpdu.talker_capabilities =
        JDKSAVDECC_ADP_TALKER_CAPABILITY_IMPLEMENTED |
        JDKSAVDECC_ADP_TALKER_CAPABILITY_AUDIO_SOURCE;
-   adpdu.listener_stream_sinks = 16;
+   adpdu.listener_stream_sinks = NUMBER_OF_STREAMS;
    adpdu.listener_capabilities =
        JDKSAVDECC_ADP_LISTENER_CAPABILITY_IMPLEMENTED |
        JDKSAVDECC_ADP_LISTENER_CAPABILITY_AUDIO_SINK;
@@ -1739,9 +1773,9 @@ int main(int argc, char **argv)
 
          sendMsg(sock, buffer, 70);
       }
-      // rc = send_ready(ix_stream);
+      rc = send_ready(ix_stream);
 
-      // printf("rc = %d, done sending ready\n", rc);
+      printf("rc = %d, done sending ready\n", rc);
 
       // rc = mrp_advertise_stream
       //               (ox_stream,

@@ -225,7 +225,7 @@ int process_mrp_msg(char *buf, int buflen)
 		{
 			talker_ctx.mode = MRP_LEAVE;
 		}
-		l = 6; /* skip "Sxx T:" */
+		l = i + 6; /* skip "Sxx T:" */
 		while ((l < buflen) && ('S' != buf[l++]));
 		if (l == buflen)
 			return -1;
@@ -653,6 +653,25 @@ int send_leave(uint8_t *stream_id)
 		     stream_id[6], stream_id[7]);
 	rc = send_mrp_msg(databuf, 1500);
 	free(databuf);
+
+	if (rc != 1500)
+		return -1;
+	else
+		return 0;
+}
+
+int mrp_check_reservation()
+{
+	char *msgbuf;
+	int rc;
+
+	msgbuf = malloc(1500);
+	if (NULL == msgbuf)
+		return -1;
+	memset(msgbuf, 0, 1500);
+	sprintf(msgbuf, "S??");
+	rc = send_mrp_msg(msgbuf, 1500);
+	free(msgbuf);
 
 	if (rc != 1500)
 		return -1;

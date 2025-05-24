@@ -759,8 +759,17 @@ struct igb_adapter {
         int hw_capture_pointer; /* hardware pointer */
         int capture;  /* playback is active */
         int c_cnt;  /* samples received since last period_elapsed */
+		int last_seq_num;
+		int numberAccum;
+		int debug_count;
+		int channel_base;
+		struct avtp_rx_accumulator {
+			int count;
+			int indices[3];  // indices des paquets accumulés
+			u8 seq_base;
+		};
 
-
+		struct avtp_rx_accumulator rx_accum;
         void *tx_addr;  // kernel address of tx network buffer
         dma_addr_t tx_physaddr;  // physical address of tx network buffer
 

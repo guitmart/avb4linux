@@ -23,6 +23,8 @@ int snd_avb_probe(struct igb_adapter *adapter, int samplerate);
 void snd_avb_remove(struct igb_adapter *adapter);
 
 void snd_avb_receive(struct igb_adapter *adapter);
+void handle_rx_packet(adapter);
+void handle_tx_packet(adapter);
 
 #endif
 
