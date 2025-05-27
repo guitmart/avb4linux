@@ -763,6 +763,7 @@ struct igb_adapter {
 		int numberAccum;
 		int debug_count;
 		int channel_base;
+		bool start;
 		struct avtp_rx_accumulator {
 			int count;
 			int indices[3];  // indices des paquets accumulés
