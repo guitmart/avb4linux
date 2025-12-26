@@ -1,8 +1,5 @@
 
 #include "igb.h"
-// #include <linux/init.h>
-// #include <linux/pci.h>
-// #include <linux/slab.h>
 #include "avpdu.h"
 #include <sound/core.h>
 #include <sound/initval.h>
@@ -10,6 +7,8 @@
 #include <sound/pcm_params.h>
 #include <asm/fpu/api.h>
 #include "avb-config.h"
+#include <linux/timecounter.h>
+#include <linux/ktime.h>
 
 /* SNDRV_CARDS: maximum number of cards supported by this module */
 
@@ -23,7 +22,7 @@ AVPDU_HEADER *pavpdus[NUMBER_OF_STREAMS];
 static int dev = 0;
 u_int8_t channels = 8;
 
-u32 mergeDatas[24 * 8 * 16 * 4];
+u32 mergeCaptureDatas[24 * 8 * NUMBER_OF_STREAMS * 4]; // MAX sample rate * channels per stream * number of streams * byte per sample
 
 // #define DMA_BUFFERSIZE (768*4)   /* 4*8*6*8*2 */
 // #define DMA_PERIODSIZE (384*4)   /* 4*8*6*8 */
@@ -362,6 +361,7 @@ static int snd_avb_new_pcm(struct igb_adapter *adapter)
     struct snd_pcm *pcm;
     int err;
     int i;
+    int j;
 
     u8 dest[6];
     u8 src[6];
@@ -433,18 +433,16 @@ static int snd_avb_new_pcm(struct igb_adapter *adapter)
         return -1;
     }
 
-    // /* initialize transmit buffers */
+    // /* initialize transmit buffers for each streams after that no header change, just data*/
 
     memset(adapter->tx_addr, 0, 4096 * 16 * 4);
-
-    int j = 0;
 
     for (i = 0; i < MAXDESCRIPTORS; i++)
     {
         j = i % NUMBER_OF_STREAMS;
 
         uint8_t sid[8];
-        memcpy(sid, stream_id, 8); // copie de base
+        memcpy(sid, stream_id, 8);
         sid[7] = j;
 
         uint8_t dst[6];
@@ -470,12 +468,13 @@ int snd_avb_probe(struct igb_adapter *adapter, int samplerate)
          0x81, 0x00, 0x60, 0x02, 0x22, 0xf0,
          0x00, 0x00, 0x00, 0x00, 0x00, 0x00};
 
-    u8 filter_mask[] = {0xcf, 0xff, 0x03};
+    u8 filter_mask[] = {0xcf, 0xff, 0x03}; // this filter pass all streams(uniqueId) from destination MAC (AVB_DEVICE_TALKER_MAC_BASE)
 
     adapter->card = 0;
     adapter->capture = 0;
     adapter->playback = 0;
 
+    // force number of channels in app
     snd_avb_capture_hw.channels_min = NUMBER_OF_STREAMS * 8;
     snd_avb_capture_hw.channels_max = NUMBER_OF_STREAMS * 8;
     snd_avb_playback_hw.channels_min = NUMBER_OF_STREAMS * 8;
@@ -581,9 +580,10 @@ int snd_avb_probe(struct igb_adapter *adapter, int samplerate)
     /* setup flex filter */
     /* directs the AVB input stream to i210's rx-queue-1 */
 
-    u64_to_array6(AVB_DEVICE_TALKER_MAC_BASE, &filter[0]);
-    u64_to_array6(AVB_DEVICE_SOURCE_MAC, &filter[6]);
+    u64_to_array6(AVB_DEVICE_TALKER_MAC_BASE, &filter[0]); // 6 first bytes from AVTP packet
+    u64_to_array6(AVB_DEVICE_SOURCE_MAC, &filter[6]);      // next 6 bytes
 
+    // if other source, used multiple filters max of 8
     igb_setup_flex_filter(adapter, 1, 0, sizeof(filter), filter, filter_mask);
 
     return err;
@@ -644,7 +644,7 @@ void handle_rx_packet(struct igb_adapter *adapter)
 
     for (j = 0; j < count1 * adapter->capture_channels; j++)
     {
-        data = mergeDatas[j];
+        data = mergeCaptureDatas[j];
         data = data >> 8;
         data = ntohl(data);
 
@@ -653,12 +653,12 @@ void handle_rx_packet(struct igb_adapter *adapter)
 
     if (count2)
     {
-        pr_info("count2 = %d", count2);
+        // pr_info("count2 = %d", count2);
         caddr = (u32 *)csubs->runtime->dma_area;
 
         for (j = 0; j < count2 * adapter->capture_channels; j++)
         {
-            data = mergeDatas[j + count1 * adapter->capture_channels];
+            data = mergeCaptureDatas[j + count1 * adapter->capture_channels];
             data = data >> 8;
             data = ntohl(data);
 
@@ -674,7 +674,7 @@ void handle_rx_packet(struct igb_adapter *adapter)
 
     if (capture && c_cnt >= adapter->capture_period_size)
     {
-        pr_info("snd_pcm_period_elapsed c_cnt = %d, adapter->capture_period_size = %d", c_cnt, adapter->capture_period_size);
+        // pr_info("snd_pcm_period_elapsed c_cnt = %d, adapter->capture_period_size = %d", c_cnt, adapter->capture_period_size);
         adapter->c_cnt = c_cnt - adapter->capture_period_size;
         snd_pcm_period_elapsed(csubs);
     }
@@ -683,14 +683,30 @@ void handle_rx_packet(struct igb_adapter *adapter)
         adapter->c_cnt = c_cnt;
     }
 }
+u64 get_ptp_time_ns(struct igb_adapter *adapter)
+{
+    return ktime_get_real_ns();
+    // struct timespec64 ts;
+
+    // if (!adapter || !adapter->ptp_clock) {
+    //     pr_warn("get_ptp_time_ns: PTP clock not available\n");
+    //     return ktime_get_real_ns();  // fallback sur l’horloge système
+    // }
+
+    // if (ptp_clock_gettime(adapter->ptp_clock, &ts))
+    //     return ktime_get_real_ns();  // fallback si erreur
+
+    // return timespec64_to_ns(&ts);
+}
+
 
 void handle_tx_packet(struct igb_adapter *adapter)
 {
     int j;
+    int s;
     u32 data;
     int tmp = adapter->rx_ring[1]->next_to_clean;
     int oldpptr = adapter->hw_playback_pointer;
-    // pr_info("oldpptr = %d\n", oldpptr);
     int newpptr = oldpptr;
     int samples_per_packet = adapter->samples_per_packet;
     struct snd_pcm_substream *psubs = ((struct snd_pcm *)adapter->pcm)->streams[SNDRV_PCM_STREAM_PLAYBACK].substream;
@@ -701,9 +717,6 @@ void handle_tx_packet(struct igb_adapter *adapter)
     u64 launch_time = 0;
     u32 *paddr = 0;
 
-    // if (!playback || !psubs || !psubs->runtime || !psubs->runtime->dma_area)
-    // 	return;
-
     if (psubs)
     {
         if (psubs->runtime)
@@ -711,18 +724,15 @@ void handle_tx_packet(struct igb_adapter *adapter)
             if (psubs->runtime->dma_area)
             {
                 paddr = ((u32 *)psubs->runtime->dma_area) + oldpptr; // 4 bytes per sample
-                // pr_info("paddr = 0x%08x", paddr );
             }
         }
     }
 
-    int s = 0;
     for (s = 0; s < NUMBER_OF_STREAMS; s++)
     {
-
-        int tx_idx = ((tmp < NUMBER_OF_STREAMS ? MAXDESCRIPTORS + tmp - NUMBER_OF_STREAMS : tmp - NUMBER_OF_STREAMS) + s + 1) % MAXDESCRIPTORS;
-        AVPDU_HEADER *pavpdu = (AVPDU_HEADER *)(adapter->tx_addr + MAXPACKETSIZE * tx_idx);
-        AVPDU_HEADER_NO_VLAN *cavpdu = (AVPDU_HEADER_NO_VLAN *)(adapter->rx_addr + MAXPACKETSIZE * tx_idx + 16);
+        int tx_idx = (((tmp < NUMBER_OF_STREAMS ? MAXDESCRIPTORS + tmp - NUMBER_OF_STREAMS : tmp - NUMBER_OF_STREAMS) + s + 1)) % MAXDESCRIPTORS;
+        AVPDU_HEADER *pavpdu = pavpdus[s];
+        AVPDU_HEADER_NO_VLAN *cavpdu = cavpdus[s];
         u64 paylen = (50 + channels * samples_per_packet * 4);
 
         int base_channel = s * 8;
@@ -731,22 +741,19 @@ void handle_tx_packet(struct igb_adapter *adapter)
         int count1 = samples_per_packet;
         int count2 = 0;
 
-        // printk(KERN_INFO "tmp1 = %d, oldpptr = %d, pbuffersize %d\n", tmp1, oldpptr, adapter->playback_buffer_size);
-
         if (playback && (tmp1 + samples_per_packet > adapter->playback_buffer_size))
         {
             count2 = tmp1 + samples_per_packet - adapter->playback_buffer_size;
             count1 = count1 - count2;
         }
 
-        // Timestamp du paquet de réception
-        // u32 rx_ts = ntohl(cavpdu->timestamp);
+        u64 now_ns = get_ptp_time_ns(adapter);
+        u32 presentation_time = (u32)((now_ns /*+ 2000000ULL*/) & 0xFFFFFFFF); // +2ms offset
 
-        // Présentation : ts + offset (future lecture côté RX)
         presentation_time = ntohl(cavpdu->timestamp) + PRESENTATION_TIME_OFFSET;
         presentation_time = htonl(presentation_time);
 
-        // Launch time = rx_ts + 125us
+
         launch_time_l = (*(u32 *)(adapter->rx_addr + MAXPACKETSIZE * tx_idx + 8)) + LAUNCH_OFFSET;
 
         if (launch_time_l >= 1000000000)
@@ -765,18 +772,17 @@ void handle_tx_packet(struct igb_adapter *adapter)
 
         for (j = 0; j < count1; j++)
         {
-            int c = 0;
-            for (c = 0; c < channels; c++)
+            int chan = 0;
+            for (chan = 0; chan < channels; chan++)
             {
                 int chan_offset = j * adapter->playback_channels;
-                int index = chan_offset + c;
-                int chan_index = (s * adapter->playback_channels) + base_channel + c + chan_offset;
+                int chan_index = base_channel + chan + chan_offset;
 
                 if (likely(playback))
                 {
                     if (chan_index >= adapter->playback_buffer_size * adapter->playback_channels)
                     {
-                        pr_err("Playback buffer overflow: index=%d\n", index);
+                        pr_err("Playback buffer overflow: chan_index=%d\n", chan_index);
                         data = 0;
                     }
                     else
@@ -790,15 +796,53 @@ void handle_tx_packet(struct igb_adapter *adapter)
                 }
 
                 data = data | 0x40000000;
-                pavpdu->audio_data[j * channels + c] = htonl(data);
+                pavpdu->audio_data[j * channels + chan] = htonl(data);
 
-                if (data != 0x40000000)
-                {
-                    // pr_info("chan_index = %d, data = 0x%08x \n", chan_index, data);
-                }
+                // if (data != 0x40000000) // for debug channels with data
+                // {
+                //     pr_info("chan_index = %d, data = 0x%08x \n", chan_index, data);
+                // }
             }
         }
 
+        if (count2)
+        {
+            pr_info("count2 = %d", count2); 
+            // for (j = 0; j < count2; j++)
+            // {
+            //     int chan = 0;
+            //     for (chan = 0; chan < channels; chan++)
+            //     {
+            //         int chan_offset = (j + count1) * adapter->playback_channels;
+            //         int chan_index = base_channel + chan + chan_offset;
+
+            //         if (likely(playback))
+            //         {
+            //             if (chan_index >= adapter->playback_buffer_size * adapter->playback_channels)
+            //             {
+            //                 pr_err("Playback buffer overflow: chan_index=%d\n", chan_index);
+            //                 data = 0;
+            //             }
+            //             else
+            //             {
+            //                 data = paddr[chan_index] >> 8;
+            //             }
+            //         }
+            //         else
+            //         {
+            //             data = 0;
+            //         }
+
+            //         data = data | 0x40000000;
+            //         pavpdu->audio_data[(j + count1) * channels + chan] = htonl(data);
+
+            //         // if (data != 0x40000000) // for debug channels with data
+            //         // {
+            //         //     pr_info("chan_index = %d, data = 0x%08x \n", chan_index, data);
+            //         // }
+            //     }
+            // }
+        }
         struct igb_avb_tx_desc *tx_desc = (struct igb_avb_tx_desc *)adapter->tx_ring[0]->desc;
 
         tx_desc[tx_idx % (MAXDESCRIPTORS >> 1)].launch_time = launch_time;
@@ -816,58 +860,21 @@ void handle_tx_packet(struct igb_adapter *adapter)
             E1000_ADVTXD_DTYP_DATA |
             E1000_ADVTXD_DCMD_IFCS |
             E1000_ADVTXD_DCMD_DEXT |
-            // E1000_ADVTXD_MAC_TSTAMP | // Si MAC timestamp dispo
             paylen;
 
-        // writel(((tx_idx) << 1) % MAXDESCRIPTORS, adapter->tx_ring[0]->tail);
-        // pr_info("tmp = %d, tx_idx = %d, s = %d, stream id: %02x%02x%02x%02x%02x%02x%02x%02x", tmp, tx_idx, s,
-        //     (unsigned char)pavpdu->stream_id[0],
-        //     (unsigned char)pavpdu->stream_id[1],
-        //     (unsigned char)pavpdu->stream_id[2],
-        //     (unsigned char)pavpdu->stream_id[3],
-        //     (unsigned char)pavpdu->stream_id[4],
-        //     (unsigned char)pavpdu->stream_id[5],
-        //     (unsigned char)pavpdu->stream_id[6],
-        //     (unsigned char)pavpdu->stream_id[7]);
-
-        // if(adapter->debug_count++ %20000 == 0)
-        // {
-        //     pr_info("debut \n stream id: %02x%02x%02x%02x%02x%02x%02x%02x",
-        //         (unsigned char)pavpdu->stream_id[0],
-        //         (unsigned char)pavpdu->stream_id[1],
-        //         (unsigned char)pavpdu->stream_id[2],
-        //         (unsigned char)pavpdu->stream_id[3],
-        //         (unsigned char)pavpdu->stream_id[4],
-        //         (unsigned char)pavpdu->stream_id[5],
-        //         (unsigned char)pavpdu->stream_id[6],
-        //         (unsigned char)pavpdu->stream_id[7]);
-        //     int sample = 0;
-        //     for (sample = 0; sample < 8 * 6; ++sample) {
-        //         pr_info("audio_data[%3d] = 0x%08x\n", sample, pavpdu->audio_data[sample]);
-        //     }
-        //     pr_info("stream id: %02x%02x%02x%02x%02x%02x%02x%02x \nfin",
-        //         (unsigned char)pavpdu->stream_id[0],
-        //         (unsigned char)pavpdu->stream_id[1],
-        //         (unsigned char)pavpdu->stream_id[2],
-        //         (unsigned char)pavpdu->stream_id[3],
-        //         (unsigned char)pavpdu->stream_id[4],
-        //         (unsigned char)pavpdu->stream_id[5],
-        //         (unsigned char)pavpdu->stream_id[6],
-        //         (unsigned char)pavpdu->stream_id[7]);
-
-        // }
     }
 
-    // Mise à jour du pointeur ALSA
-    p_cnt += samples_per_packet;
-    newpptr = (newpptr + samples_per_packet * adapter->playback_channels) %
-              (adapter->playback_buffer_size * adapter->playback_channels);
-    adapter->hw_playback_pointer = newpptr;
-
-    // Générer l'interruption ALSA si nécessaire
-    if (p_cnt >= adapter->playback_period_size)
+    if (playback)
     {
-        //pr_info("snd_pcm_period_elapsed p_cnt = %d, adapter->playback_period_size = %d", p_cnt, adapter->playback_period_size);
+        p_cnt += samples_per_packet;
+        newpptr = (newpptr + samples_per_packet * adapter->playback_channels) %
+                  (adapter->playback_buffer_size * adapter->playback_channels);
+        adapter->hw_playback_pointer = newpptr;
+    }
+
+    if (playback && p_cnt >= adapter->playback_period_size)
+    {
+        //pr_info("p_cnt = %d, adapter->playback_period_size = %d, adapter->playback_buffer_size = %d", p_cnt, adapter->playback_period_size, adapter->playback_buffer_size);
         adapter->p_cnt = p_cnt - adapter->playback_period_size;
         snd_pcm_period_elapsed(psubs);
     }
@@ -892,21 +899,18 @@ void snd_avb_receive(struct igb_adapter *adapter)
     while (rx_desc[tmp].wb.upper.status_error & 1)
     {
         AVPDU_HEADER_NO_VLAN *cavpdu;
-        // AVPDU_HEADER *pavpdu;
+        AVPDU_HEADER *pavpdu;
 
         cavpdu = (AVPDU_HEADER_NO_VLAN *)(adapter->rx_addr + MAXPACKETSIZE * tmp + 16);
-        // pavpdu = (AVPDU_HEADER *)(adapter->tx_addr + MAXPACKETSIZE * tmp);
-
-        int capture_uniqueId = cavpdu->stream_id[7];
-        // int playback_uniqueId = pavpdu->stream_id[7];
+        pavpdu = (AVPDU_HEADER *)(adapter->tx_addr + MAXPACKETSIZE * tmp);
 
         if (cavpdu->sequence_number != adapter->last_seq_num)
         {
             adapter->numberAccum = 0;
             adapter->last_seq_num = cavpdu->sequence_number;
             cavpdus[adapter->numberAccum] = cavpdu;
+            pavpdus[adapter->numberAccum] = pavpdu;
             adapter->start = true;
-            // pr_info("cavpdu->sequence_number = %d, capture_uniqueId = %d", cavpdu->sequence_number, capture_uniqueId);
         }
         else
         {
@@ -914,39 +918,25 @@ void snd_avb_receive(struct igb_adapter *adapter)
             {
                 adapter->numberAccum++;
                 cavpdus[adapter->numberAccum] = cavpdu;
-                // pr_info("cavpdu->sequence_number = %d, adapter->numberAccum = %d, capture_uniqueId = %d", cavpdu->sequence_number, adapter->numberAccum, capture_uniqueId);
+                pavpdus[adapter->numberAccum] = pavpdu;
             }
         }
 
         if (adapter->numberAccum >= NUMBER_OF_STREAMS - 1)
         {
-            // pr_info("adapter->numberAccum >= NUMBER_OF_STREAMS");
             int frame = 0;
             for (frame = 0; frame < samples_per_packet; frame++)
             {
                 int pkt = 0;
                 for (pkt = 0; pkt < NUMBER_OF_STREAMS; pkt++)
                 {
-                    // Chaque paquet contient 8 canaux par frame, soit 8 u32
+                    // Each packet contains 8 channels per frame, or 8 u32
                     u32 *src = &cavpdus[pkt]->audio_data[frame * channels];
-                    u32 *dst = &mergeDatas[frame * (NUMBER_OF_STREAMS * channels) + pkt * channels];
+                    u32 *dst = &mergeCaptureDatas[frame * (NUMBER_OF_STREAMS * channels) + pkt * channels];
                     memcpy(dst, src, channels * sizeof(u32));
                 }
             }
 
-            // int numberSample = NUMBER_OF_STREAMS * samples_per_packet * channels;
-            // if ((adapter->debug_count++ % 1000) == 0)
-            // {
-            //     int f = 0;
-            // 	for (f = 0; i < numberSample; f++)
-            // 	{ // Afficher 8 premiers échantillons du paquet
-            // 		u32 raw = ntohl(mergeDatas[f]);
-            // 		int sample = (int)(raw >> 8); // Supposé AM824, données sur 24 bits
-            // 		bool valid = raw & 0x40000000;
-            // 		if (valid && sample != 0)
-            // 			pr_info("AVTP audio[%d] = 0x%08x -> %d\n", f, raw, sample);
-            // 	}
-            // }
             if (adapter->capture)
                 handle_rx_packet(adapter);
 
@@ -963,16 +953,11 @@ void snd_avb_receive(struct igb_adapter *adapter)
         tmp = (tmp + 1) % MAXDESCRIPTORS;
     }
 
-    // printk(" tmp = %d next_to_clean = %d, next_to_use = %d\n", tmp, (int)adapter->rx_ring[1]->next_to_clean, (int)adapter->rx_ring[1]->next_to_use);
     if (adapter->rx_ring[1]->next_to_clean != tmp)
     {
-        // printk("adapter->rx_ring[1]->next_to_clean != tmp %d\n", tmp);
         adapter->rx_ring[1]->next_to_clean = tmp;
-        // adapter->tx_ring[0]->next_to_clean = tmp;
         wmb();
 
-        // pr_info("tmp en sortie = %d, adapter->tx_ring[0]->next_to_clean %u, adapter->rx_ring[1]->next_to_clean %u\n", tmp, adapter->tx_ring[0]->next_to_clean, adapter->rx_ring[1]->next_to_clean);
         writel((tmp) % MAXDESCRIPTORS, adapter->rx_ring[1]->tail);
-        // writel(((tmp) << 1) % MAXDESCRIPTORS, adapter->tx_ring[0]->tail);
     }
 }

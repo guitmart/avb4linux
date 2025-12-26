@@ -56,6 +56,7 @@
 #include <../kernel-module/igb/avb-config.h>
 #include <alsa/asoundlib.h>
 
+
 #define CLASS_A_ID 6
 #define CLASS_A_VLAN 2
 #define CLASS_A_PRIORITY 3
@@ -234,7 +235,6 @@ void fill_jdksavdecc_descriptor_entity()
        JDKSAVDECC_ADP_ENTITY_CAPABILITY_AEM_SUPPORTED |
        JDKSAVDECC_ADP_ENTITY_CAPABILITY_CLASS_A_SUPPORTED |
        JDKSAVDECC_ADP_ENTITY_CAPABILITY_GPTP_SUPPORTED |
-       JDKSAVDECC_ADP_ENTITY_CAPABILITY_AEM_IDENTIFY_CONTROL_INDEX_VALID |
        JDKSAVDECC_ADP_ENTITY_CAPABILITY_AEM_INTERFACE_INDEX_VALID;
    entity.talker_stream_sources = NUMBER_OF_STREAMS;
    entity.talker_capabilities =
@@ -268,7 +268,7 @@ void fill_jdksavdecc_descriptor_configuration()
 
    configuration.descriptor_type = JDKSAVDECC_DESCRIPTOR_CONFIGURATION;
    configuration.descriptor_index = 0;
-   jdksavdecc_string_set_from_cstr(&configuration.object_name, "");
+   jdksavdecc_string_set_from_cstr(&configuration.object_name, "intel avb");
    configuration.localized_description = 0xffff;
    configuration.descriptor_counts_count = 8;
    configuration.descriptor_counts_offset = 74;
@@ -302,7 +302,7 @@ void fill_jdksavdecc_descriptor_audio_unit()
    audio_unit.descriptor_type = JDKSAVDECC_DESCRIPTOR_AUDIO_UNIT;
    audio_unit.descriptor_index = 0;
    jdksavdecc_string_set_from_cstr(&audio_unit.object_name, "");
-   audio_unit.localized_description = 1;
+   audio_unit.localized_description = 0xFFFF;
    audio_unit.clock_domain_index = 0;
    audio_unit.number_of_stream_input_ports = NUMBER_OF_STREAMS;
    audio_unit.base_stream_input_port = 0;
@@ -404,7 +404,7 @@ void fill_jdksavdecc_descriptor_streams()
       stream_input[i].descriptor_type = JDKSAVDECC_DESCRIPTOR_STREAM_INPUT;
       stream_input[i].descriptor_index = i;
       jdksavdecc_string_set_from_cstr(&stream_input[i].object_name, name);
-      stream_input[i].localized_description = -1;
+      stream_input[i].localized_description = 0xFFFF;
       stream_input[i].clock_domain_index = 0;
       stream_input[i].stream_flags =
           JDKSAVDECC_DESCRIPTOR_STREAM_FLAG_CLOCK_SYNC_SOURCE |
@@ -426,7 +426,7 @@ void fill_jdksavdecc_descriptor_streams()
       stream_output[i].descriptor_type = JDKSAVDECC_DESCRIPTOR_STREAM_OUTPUT;
       stream_output[i].descriptor_index = i;
       jdksavdecc_string_set_from_cstr(&stream_output[i].object_name, name);
-      stream_output[i].localized_description = -1;
+      stream_output[i].localized_description = 0xFFFF;
       stream_output[i].clock_domain_index = 0;
       stream_output[i].stream_flags = JDKSAVDECC_DESCRIPTOR_STREAM_FLAG_CLASS_A;
       jdksavdecc_eui64_init_from_uint64(&stream_output[i].current_format, stream_format);
@@ -454,17 +454,17 @@ void fill_jdksavdecc_descriptor_avb_interface()
    avb_interface.descriptor_type = JDKSAVDECC_DESCRIPTOR_AVB_INTERFACE;
    avb_interface.descriptor_index = 0;
    jdksavdecc_string_set_from_cstr(&avb_interface.object_name, "");
-   avb_interface.localized_description = 0;
+   avb_interface.localized_description = 0xFFFF;
    memcpy(&avb_interface.mac_address.value, MAC, 6);
-   avb_interface.interface_flags = htons(JDKSAVDECC_AVB_INTERFACE_FLAG_GPTP_GRANDMASTER_SUPPORTED |
+   avb_interface.interface_flags = JDKSAVDECC_AVB_INTERFACE_FLAG_GPTP_GRANDMASTER_SUPPORTED |
                                          JDKSAVDECC_AVB_INTERFACE_FLAG_GPTP_SUPPORTED |
-                                         JDKSAVDECC_AVB_INTERFACE_FLAG_SRP_SUPPORTED);
-   jdksavdecc_eui64_init_from_uint64(&avb_interface.clock_identity, GRANDMASTER_ID);
-   avb_interface.priority1 = 240;
+                                         JDKSAVDECC_AVB_INTERFACE_FLAG_SRP_SUPPORTED;
+   jdksavdecc_eui64_init_from_uint64(&avb_interface.clock_identity, mac_to_entity_id(OWN_MAC));
+   avb_interface.priority1 = 246;
    avb_interface.clock_class = 248;
    avb_interface.offset_scaled_log_variance = 17258;
    avb_interface.clock_accuracy = 248;
-   avb_interface.priority2 = 238;
+   avb_interface.priority2 = 248;
    avb_interface.domain_number = 0;
    avb_interface.log_sync_interval = -2;
    avb_interface.log_announce_interval = 0;
@@ -479,7 +479,7 @@ void fill_jdksavdecc_descriptor_clock_source()
    clock_source.descriptor_type = JDKSAVDECC_DESCRIPTOR_CLOCK_SOURCE;
    clock_source.descriptor_index = 0;
    jdksavdecc_string_set_from_cstr(&clock_source.object_name, "");
-   clock_source.localized_description = 2;
+   clock_source.localized_description = 0xFFFF;
    clock_source.clock_source_flags = 0;
    clock_source.clock_source_type = JDKSAVDECC_CLOCK_SOURCE_TYPE_INTERNAL;
    jdksavdecc_eui64_init_from_uint64(&clock_source.clock_source_identifier, GRANDMASTER_ID);
@@ -562,6 +562,7 @@ int createSocket(char *name, int *ifindex, struct sockaddr *mac)
 
    if (setsockopt(sock, SOL_PACKET, PACKET_ADD_MEMBERSHIP, &mreq, sizeof(mreq)) < 0) // getting MAC Address
       printf("error setting setsockopt PACKET_ADD_MEMBERSHIP\n");
+      
 
    struct ifreq ifreq_c;
 
@@ -648,6 +649,7 @@ void handle_stream_input_descriptor(int sock, char *buffer, int len)
 
    jdksavdecc_common_control_header_set_control_data_length(196, buffer, HEADER_OFFSET);
    jdksavdecc_descriptor_stream_write(&stream_input[i], buffer, 0x2A, JDKSAVDECC_DESCRIPTOR_STREAM_LEN + 0x2A);
+
    memcpy(&buffer[0xae], &STREAM_INPUT_FORMAT_0, sizeof(STREAM_INPUT_FORMAT_0));
    memcpy(&buffer[0xae + 8], &STREAM_INPUT_FORMAT_1, sizeof(STREAM_INPUT_FORMAT_1));
    memcpy(&buffer[0xae + 16], &STREAM_INPUT_FORMAT_2, sizeof(STREAM_INPUT_FORMAT_2));
@@ -706,7 +708,7 @@ void handle_clock_domain_descriptor(int sock, char *buffer, int len)
    cd.descriptor_type = JDKSAVDECC_DESCRIPTOR_CLOCK_DOMAIN;
    cd.descriptor_index = 0;
    jdksavdecc_string_set_from_cstr(&cd.object_name, "");
-   cd.localized_description = -1;
+   cd.localized_description = 0xFFFF;
    cd.clock_source_index = 0;
    cd.clock_sources_offset = 76;
    cd.clock_sources_count = 1;
@@ -727,9 +729,10 @@ void handle_strings_descriptor(int sock, char *buffer, int len)
    struct jdksavdecc_descriptor_strings strings;
 
    memset(&strings, 0, sizeof(strings));
+   uint16_t requested_index = jdksavdecc_descriptor_strings_get_descriptor_index(buffer, 0x2A);
 
    strings.descriptor_type = JDKSAVDECC_DESCRIPTOR_STRINGS;
-   strings.descriptor_index = 0;
+   strings.descriptor_index = requested_index;
    jdksavdecc_string_set_from_cstr(&strings.string_0, "Drumfix");
    jdksavdecc_string_set_from_cstr(&strings.string_1, "Linux AVB");
    jdksavdecc_string_set_from_cstr(&strings.string_2, "Internal");
@@ -800,7 +803,7 @@ void handle_audio_cluster_descriptor(int sock, char *buffer, int len)
    ac.descriptor_index = jdksavdecc_descriptor_stream_get_descriptor_index(buffer, 0x2A);
    struct jdksavdecc_string object_name;
    jdksavdecc_string_set_from_cstr(&ac.object_name, "");
-   ac.localized_description = -1;
+   ac.localized_description = 0xFFFF;
    ac.signal_type = -1;
    ac.signal_index = 0;
    ac.signal_output = 0;
@@ -818,7 +821,7 @@ void handle_audio_cluster_descriptor(int sock, char *buffer, int len)
 void handle_audio_map_descriptor(int sock, char *buffer, int len)
 {
    struct jdksavdecc_descriptor_audio_map am;
-   struct jdksavdecc_audio_mapping *amap = (struct jdksavdecc_audio_mapping *)buffer + 50;
+   struct jdksavdecc_audio_mapping *amap = (struct jdksavdecc_audio_mapping *)(buffer + 50);
    int i;
 
    memset(&am, 0, sizeof(am));
@@ -836,7 +839,7 @@ void handle_audio_map_descriptor(int sock, char *buffer, int len)
       amap[i].mapping_stream_index = htons(am.descriptor_index);
       amap[i].mapping_stream_channel = htons(i);
       amap[i].mapping_cluster_offset = htons(i);
-      amap[i].mapping_cluster_channel = 0;
+      amap[i].mapping_cluster_channel = htons(0);
    }
 
    sendMsg(sock, buffer, 114);
@@ -945,9 +948,14 @@ void handle_aem_command(int sock, char *buffer, int len)
    switch (jdksavdecc_aecpdu_aem_get_command_type(buffer, HEADER_OFFSET))
 
    {
+   case JDKSAVDECC_AEM_COMMAND_DEREGISTER_UNSOLICITED_NOTIFICATION:
+   {
+      sendMsg(sock, buffer, 64);
+      break;
+   }
    case JDKSAVDECC_AEM_COMMAND_REGISTER_UNSOLICITED_NOTIFICATION:
    {
-      handle_unimplemented_aem_command(sock, buffer, len);
+      sendMsg(sock, buffer, 64);
       break;
    }
    case JDKSAVDECC_AEM_COMMAND_READ_DESCRIPTOR:
@@ -968,6 +976,23 @@ void handle_aem_command(int sock, char *buffer, int len)
    case JDKSAVDECC_AEM_COMMAND_SET_STREAM_FORMAT:
    {
       sendMsg(sock, buffer, len);
+      break;
+   }
+   case JDKSAVDECC_AEM_COMMAND_ACQUIRE_ENTITY:
+   {
+      sendMsg(sock, buffer, 64);
+      break;
+   }
+   case JDKSAVDECC_AEM_COMMAND_LOCK_ENTITY:
+   {
+      sendMsg(sock, buffer, 64);
+      break;
+   }
+   case JDKSAVDECC_AEM_COMMAND_GET_NAME:
+   {
+      struct jdksavdecc_string name = {"test"};
+      jdksavdecc_aem_command_get_name_response_set_name(name, buffer, HEADER_OFFSET);
+      sendMsg(sock, buffer, 124);
       break;
    }
    default:
@@ -993,7 +1018,7 @@ void handle_aecp(int sock, char *buffer, int len)
 
    struct jdksavdecc_eui64 target_id = jdksavdecc_common_control_header_get_stream_id(buffer, HEADER_OFFSET);
    uint64_t target_id_a = jdksavdecc_eui64_convert_to_uint64(&target_id);
-
+   uint8_t aecpCommand = jdksavdecc_common_control_header_get_control_data(buffer, HEADER_OFFSET);
    switch (jdksavdecc_common_control_header_get_control_data(buffer, HEADER_OFFSET))
    {
    case JDKSAVDECC_AECP_MESSAGE_TYPE_AEM_COMMAND:
@@ -1364,7 +1389,7 @@ void handle_entity_discover()
 {
 }
 
-void handle_entity_available(char *buffer)
+void handle_entity_available(int sock, char *buffer)
 {
 }
 
@@ -1382,7 +1407,7 @@ void handle_aem(int sock, char *buffer, int len)
       handle_entity_discover();
       break;
    case JDKSAVDECC_ADP_MESSAGE_TYPE_ENTITY_AVAILABLE:
-      handle_entity_available(buffer);
+      handle_entity_available(sock, buffer);
       break;
    case JDKSAVDECC_ADP_MESSAGE_TYPE_ENTITY_DEPARTING:
       handle_entity_departing(buffer);
@@ -1411,11 +1436,6 @@ void *handle_22f0_msg(void *arg)
       if (res >= 0)
       {
          uint8_t subtype = jdksavdecc_common_control_header_get_subtype(msg, COMMON_HEADER_START);
-
-         if (jdksavdecc_common_control_header_get_subtype(msg, COMMON_HEADER_START))
-         {
-            // printf("msgtype = %02x\n", jdksavdecc_common_control_header_get_subtype(msg, COMMON_HEADER_START));
-         }
 
          switch (jdksavdecc_common_control_header_get_subtype(msg, COMMON_HEADER_START))
          {
@@ -1501,8 +1521,8 @@ int main(int argc, char **argv)
 
    ENTITY_ID = mac_to_entity_id(own_mac_address);
    CONTROLLER_ID = mac_to_controller_id(own_mac_address);
-   MODEL_ID = 1;
-   GRANDMASTER_ID = mac_to_entity_id(own_mac_address);
+   MODEL_ID = ENTITY_ID;
+   GRANDMASTER_ID = mac_to_entity_id(0x90a7c16b8ca0);
 
    REMOTE_ENTITY_ID = mac_to_entity_id(AVB_DEVICE_SOURCE_MAC);
    REMOTE_TALKER_ID = mac_to_entity_id(AVB_DEVICE_SOURCE_MAC);
@@ -1632,7 +1652,6 @@ int main(int argc, char **argv)
        JDKSAVDECC_ADP_ENTITY_CAPABILITY_AEM_SUPPORTED |
        JDKSAVDECC_ADP_ENTITY_CAPABILITY_CLASS_A_SUPPORTED |
        JDKSAVDECC_ADP_ENTITY_CAPABILITY_GPTP_SUPPORTED |
-       JDKSAVDECC_ADP_ENTITY_CAPABILITY_AEM_IDENTIFY_CONTROL_INDEX_VALID |
        JDKSAVDECC_ADP_ENTITY_CAPABILITY_AEM_INTERFACE_INDEX_VALID;
    adpdu.talker_stream_sources = NUMBER_OF_STREAMS;
    adpdu.talker_capabilities =
@@ -1827,7 +1846,7 @@ int main(int argc, char **argv)
 
          sendMsg(sock, buffer, 82);
 
-         sleep(5);
+         sleep(10);
       }
       close(sock);
 
