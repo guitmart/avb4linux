@@ -763,14 +763,13 @@ struct igb_adapter {
 		int numberAccum;
 		int debug_count;
 		int channel_base;
+		int *tx_seq;
+		int *tx_dbc;
+		u64 last_ptp_ns;
+		u64 last_system_ns;
+		int freewheel_count; // Pour logger si on reste trop longtemps en secours
 		bool start;
-		struct avtp_rx_accumulator {
-			int count;
-			int indices[3];  // indices des paquets accumulés
-			u8 seq_base;
-		};
 
-		struct avtp_rx_accumulator rx_accum;
         void *tx_addr;  // kernel address of tx network buffer
         dma_addr_t tx_physaddr;  // physical address of tx network buffer
 
