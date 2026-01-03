@@ -30,7 +30,6 @@ u32 mergeCaptureDatas[24 * 8 * NUMBER_OF_STREAMS * 4]; // MAX sample rate * chan
 #define DMA_BUFFERSIZE (6 * 8 * 2 * 8)
 
 #define MAXPACKETSIZE 1024
-#define MAXDESCRIPTORS 256
 #define LAUNCH_OFFSET 125000            /* nanoseconds */
 #define PRESENTATION_TIME_OFFSET 300000 /* nanoseconds */
 
@@ -40,7 +39,8 @@ static struct snd_pcm_hardware snd_avb_playback_hw = {
     .info = (SNDRV_PCM_INFO_MMAP |
              SNDRV_PCM_INFO_INTERLEAVED |
              SNDRV_PCM_INFO_BLOCK_TRANSFER |
-             SNDRV_PCM_INFO_MMAP_VALID), // |
+             SNDRV_PCM_INFO_MMAP_VALID |
+            SNDRV_PCM_INFO_SYNC_START), // |
                                          // SNDRV_PCM_INFO_SYNC_START |
     // SNDRV_PCM_INFO_JOINT_DUPLEX),
     .formats = SNDRV_PCM_FMTBIT_S32_LE,
@@ -57,8 +57,8 @@ static struct snd_pcm_hardware snd_avb_playback_hw = {
     .buffer_bytes_max = 1200 * 4 * 128 * 4,
     .period_bytes_min = 6 * 4 * 8,
     .period_bytes_max = 1200 * 4 * 128,
-    .periods_min = 3,
-    .periods_max = 3,
+    .periods_min = 2,
+    .periods_max = 4,
 };
 /* max period size = 1200 = 25ms at 48000 */
 /* max periods = 4 */
@@ -71,7 +71,8 @@ static struct snd_pcm_hardware snd_avb_capture_hw = {
     .info = (SNDRV_PCM_INFO_MMAP |
              SNDRV_PCM_INFO_INTERLEAVED |
              SNDRV_PCM_INFO_BLOCK_TRANSFER |
-             SNDRV_PCM_INFO_MMAP_VALID), // |
+             SNDRV_PCM_INFO_MMAP_VALID |
+            SNDRV_PCM_INFO_SYNC_START), // |
                                          // SNDRV_PCM_INFO_SYNC_START |
     // SNDRV_PCM_INFO_JOINT_DUPLEX),
     .formats = SNDRV_PCM_FMTBIT_S32_LE,
@@ -88,8 +89,8 @@ static struct snd_pcm_hardware snd_avb_capture_hw = {
     .buffer_bytes_max = 1200 * 4 * 128 * 4,
     .period_bytes_min = 6 * 4 * 8,
     .period_bytes_max = 1200 * 4 * 128,
-    .periods_min = 3,
-    .periods_max = 3,
+    .periods_min = 2,
+    .periods_max = 4,
 };
 
 /* some convertion routines */
@@ -97,7 +98,7 @@ static struct snd_pcm_hardware snd_avb_capture_hw = {
 void u64_to_array6(u64 src, u8 *dest)
 {
     // On écrit les 4 premiers octets d'un coup
-    *(u32 *)(dest)     = htonl((u32)(src >> 16));
+    *(u32 *)(dest) = htonl((u32)(src >> 16));
     // On écrit les 2 derniers octets
     *(u16 *)(dest + 4) = htons((u16)(src & 0xFFFF));
 }
@@ -115,16 +116,15 @@ static int snd_avb_playback_open(struct snd_pcm_substream *substream)
     struct igb_adapter *adapter = snd_pcm_substream_chip(substream);
     struct snd_pcm_runtime *runtime = substream->runtime;
 
-    //        printk(KERN_INFO "open playback\n");
-
+    /* 1. Hardware d'abord */
     runtime->hw = snd_avb_playback_hw;
+
+    /* 2. Flags de précision ensuite */
+    runtime->tstamp_mode = SNDRV_PCM_TSTAMP_ENABLE;
+    runtime->tstamp_type = SNDRV_PCM_TSTAMP_TYPE_MONOTONIC;
+    
     adapter->playback = 0;
     adapter->last_system_ns = 0;
-
-    //	runtime->dma_area = adapter->p_addr;
-    //	runtime->dma_bytes = 8*4*6*8*2;
-
-    //        snd_pcm_set_sync(substream);
 
     return 0;
 }
@@ -148,6 +148,10 @@ static int snd_avb_capture_open(struct snd_pcm_substream *substream)
     //        printk(KERN_INFO "open capture\n");
 
     runtime->hw = snd_avb_capture_hw;
+
+    runtime->tstamp_mode = SNDRV_PCM_TSTAMP_ENABLE;
+    runtime->tstamp_type = SNDRV_PCM_TSTAMP_TYPE_MONOTONIC;
+
     adapter->capture = 0;
 
     return 0;
@@ -195,6 +199,10 @@ static int snd_avb_pcm_playback_prepare(struct snd_pcm_substream *substream)
         printk(KERN_INFO "samplerate change not supported yet\n");
         return -1;
     }
+
+    runtime->tstamp_mode = SNDRV_PCM_TSTAMP_ENABLE;
+    runtime->tstamp_type = SNDRV_PCM_TSTAMP_TYPE_MONOTONIC;
+
     adapter->rate = runtime->rate;
     adapter->playback_channels = runtime->channels;
     adapter->playback_period_size = runtime->period_size;
@@ -221,6 +229,26 @@ static int snd_avb_pcm_playback_prepare(struct snd_pcm_substream *substream)
     return 0;
 }
 
+void disable_itr_for_avb(struct igb_adapter *adapter)
+{
+    // Indispensable pour que wr32() fonctionne
+    struct e1000_hw *hw = &adapter->hw;
+
+    adapter->rx_itr_setting = 0;
+    adapter->tx_itr_setting = 0;
+    // EITR(0) correspond au premier vecteur d'interruption
+    // On écrit 0 pour supprimer le délai de 3 microsecondes (votre rx-usecs: 3)
+    int i;
+    for (i = 0; i < 4; i++)
+    {
+        wr32(E1000_EITR(i), 0);
+    }
+
+    // Un flush est souvent nécessaire pour forcer l'écriture immédiate sur le bus PCIe
+    wrfl();
+    printk(KERN_INFO "AVB: ITR disabled for minimal jitter\n");
+}
+
 /* prepare capture callback */
 static int snd_avb_pcm_capture_prepare(struct snd_pcm_substream *substream)
 {
@@ -232,6 +260,9 @@ static int snd_avb_pcm_capture_prepare(struct snd_pcm_substream *substream)
         printk(KERN_INFO "samplerate change not supported yet\n");
         return -1;
     }
+
+    runtime->tstamp_mode = SNDRV_PCM_TSTAMP_ENABLE;
+    runtime->tstamp_type = SNDRV_PCM_TSTAMP_TYPE_MONOTONIC;
 
     adapter->rate = runtime->rate;
     adapter->capture_channels = runtime->channels;
@@ -308,17 +339,46 @@ static snd_pcm_uframes_t
 snd_avb_pcm_playback_pointer(struct snd_pcm_substream *substream)
 {
     struct igb_adapter *adapter = snd_pcm_substream_chip(substream);
+    
+    // Sécurité dynamique
+    u32 current_pos = adapter->hw_playback_pointer;
+    u32 total_samples = adapter->playback_buffer_size * adapter->playback_channels;
 
-    return adapter->hw_playback_pointer / adapter->playback_channels;
+    // 2. Si on a dépassé (le fameux 130), on recale le pointeur réel !
+    // Cela répare l'erreur au lieu de juste la cacher.
+    if (unlikely(current_pos >= total_samples)) {
+        adapter->hw_playback_pointer %= total_samples;
+        current_pos = adapter->hw_playback_pointer;
+    }
+
+    // Capture du temps pour Reaper (en timespec64)
+    snd_pcm_gettime(substream->runtime, (struct timespec64 *)&substream->runtime->status->tstamp);
+
+    // On retourne des FRAMES à ALSA
+    return current_pos / adapter->playback_channels;
 }
 
-/* pointer callback */
 static snd_pcm_uframes_t
 snd_avb_pcm_capture_pointer(struct snd_pcm_substream *substream)
 {
     struct igb_adapter *adapter = snd_pcm_substream_chip(substream);
+    
+    // Sécurité dynamique
+    u32 current_pos = adapter->hw_capture_pointer;
+    u32 total_samples = adapter->capture_buffer_size * adapter->capture_channels;
 
-    return adapter->hw_capture_pointer / adapter->capture_channels;
+    // 2. Si on a dépassé (le fameux 130), on recale le pointeur réel !
+    // Cela répare l'erreur au lieu de juste la cacher.
+    if (unlikely(current_pos >= total_samples)) {
+        adapter->hw_capture_pointer %= total_samples;
+        current_pos = adapter->hw_capture_pointer;
+    }
+
+    // Capture du temps pour Reaper (en timespec64)
+    snd_pcm_gettime(substream->runtime, (struct timespec64 *)&substream->runtime->status->tstamp);
+
+    // On retourne des FRAMES à ALSA
+    return current_pos / adapter->capture_channels;
 }
 
 /* operators */
@@ -401,33 +461,36 @@ static int snd_avb_new_pcm(struct igb_adapter *adapter)
                                           NULL,
                                           64 * 1024, 64 * 1024);
 
-    printk(KERN_INFO "alloc tx new pcm avb\n");
-    adapter->tx_addr = dma_alloc_coherent(&adapter->pdev->dev, 4096 * 16 * 4,
+    size_t alloc_size = adapter->tx_ring_count * MAXPACKETSIZE;
+
+    // --- ALLOCATION TX ---
+    printk(KERN_INFO "AVB: Allocating TX DMA memory (%zu bytes)\n", alloc_size);
+    adapter->tx_addr = dma_alloc_coherent(&adapter->pdev->dev, alloc_size,
                                           &adapter->tx_physaddr, GFP_KERNEL);
-    if (adapter->tx_addr == NULL)
-        return -1;
-
-    printk(KERN_INFO "alloc rx new pcm avb\n");
-    adapter->rx_addr = dma_alloc_coherent(&adapter->pdev->dev, 4096 * 16 * 4,
-                                          &adapter->rx_physaddr, GFP_KERNEL);
-    if (adapter->rx_addr == NULL)
+    if (!adapter->tx_addr)
     {
-        printk(KERN_INFO "alloc rx failed\n");
-        if (adapter->tx_addr)
-        {
-            dma_free_coherent(&adapter->pdev->dev, 4096 * 16 * 4,
-                              adapter->tx_addr, adapter->tx_physaddr);
-            adapter->tx_addr = 0;
-        }
+        printk(KERN_ERR "AVB: Failed to allocate TX DMA memory (Size: %zu)\n", alloc_size);
+        return -ENOMEM;
+    }
 
-        return -1;
+    // --- ALLOCATION RX ---
+    printk(KERN_INFO "AVB: Allocating RX DMA memory (%zu bytes)\n", alloc_size);
+    adapter->rx_addr = dma_alloc_coherent(&adapter->pdev->dev, alloc_size,
+                                          &adapter->rx_physaddr, GFP_KERNEL);
+    if (!adapter->rx_addr)
+    {
+        printk(KERN_ERR "AVB: Failed to allocate RX DMA memory (Size: %zu)\n", alloc_size);
+        // Si le RX échoue, on doit libérer le TX qu'on vient d'allouer !
+        dma_free_coherent(&adapter->pdev->dev, alloc_size, adapter->tx_addr, adapter->tx_physaddr);
+        adapter->tx_addr = NULL;
+        return -ENOMEM;
     }
 
     // /* initialize transmit buffers for each streams after that no header change, just data*/
 
-    memset(adapter->tx_addr, 0, 4096 * 16 * 4);
+    memset(adapter->tx_addr, 0, adapter->tx_ring_count * MAXPACKETSIZE);
 
-    for (i = 0; i < MAXDESCRIPTORS; i++)
+    for (i = 0; i < adapter->tx_ring_count; i++)
     {
         j = i % NUMBER_OF_STREAMS;
 
@@ -452,6 +515,7 @@ int snd_avb_probe(struct igb_adapter *adapter, int samplerate)
     adapter->tx_seq = kcalloc(NUMBER_OF_STREAMS, sizeof(u8), GFP_KERNEL);
     adapter->tx_dbc = kcalloc(NUMBER_OF_STREAMS, sizeof(u8), GFP_KERNEL);
 
+    disable_itr_for_avb(adapter);
     if (!adapter->tx_seq || !adapter->tx_dbc)
     {
         // Gérer l'erreur d'allocation ici
@@ -566,7 +630,7 @@ int snd_avb_probe(struct igb_adapter *adapter, int samplerate)
 
         int i;
 
-        for (i = 0; i < MAXDESCRIPTORS; i++)
+        for (i = 0; i < adapter->tx_ring_count; i++)
         {
             desc[i].read.pkt_addr = adapter->rx_physaddr + MAXPACKETSIZE * i;
             desc[i].read.hdr_addr = 0;
@@ -600,15 +664,16 @@ void snd_avb_remove(struct igb_adapter *adapter)
 
     udelay(600);
 
+    size_t alloc_size = adapter->tx_ring_count * MAXPACKETSIZE;
     igb_clear_flex_filter(adapter, 0);
 
     if (adapter->tx_addr)
-        dma_free_coherent(&adapter->pdev->dev, 4096 * 16 * 4,
+        dma_free_coherent(&adapter->pdev->dev, alloc_size,
                           adapter->tx_addr, adapter->tx_physaddr);
     adapter->tx_addr = 0;
 
     if (adapter->rx_addr)
-        dma_free_coherent(&adapter->pdev->dev, 4096 * 16 * 4,
+        dma_free_coherent(&adapter->pdev->dev, alloc_size,
                           adapter->rx_addr, adapter->rx_physaddr);
     adapter->rx_addr = 0;
 
@@ -715,20 +780,24 @@ u64 get_safe_avb_time(struct igb_adapter *adapter)
     u64 result_time;
 
     // Initialisation au premier appel
-    if (unlikely(adapter->last_system_ns == 0)) {
+    if (unlikely(adapter->last_system_ns == 0))
+    {
         adapter->last_system_ns = now_system;
         adapter->last_ptp_ns = now_ptp;
         return now_ptp;
     }
 
-    // Seuil de tolérance : le temps PTP doit avoir avancé d'au moins 20% 
+    // Seuil de tolérance : le temps PTP doit avoir avancé d'au moins 20%
     // et pas plus de 500% par rapport au temps système.
     // À 0.3ms, on est très sensible au jitter.
-    if (unlikely(delta_ptp < (delta_system >> 2) || delta_ptp > (delta_system << 2))) {
+    if (unlikely(delta_ptp < (delta_system >> 2) || delta_ptp > (delta_system << 2)))
+    {
         // --- MODE FREEWHEEL (Secours) ---
         result_time = adapter->last_ptp_ns + delta_system;
         adapter->freewheel_count++;
-    } else {
+    }
+    else
+    {
         // --- MODE NORMAL ---
         result_time = now_ptp;
         adapter->freewheel_count = 0;
@@ -752,6 +821,7 @@ void handle_tx_packet(struct igb_adapter *adapter)
     struct snd_pcm_substream *psubs = NULL;
     u32 *paddr = NULL;
     static u64 last_ptp_time = 0;
+    int MAXDESCRIPTORS = adapter->tx_ring_count;
 
     if (adapter->pcm && adapter->playback)
     {
@@ -761,8 +831,10 @@ void handle_tx_packet(struct igb_adapter *adapter)
     }
 
     u64 safe_now = get_safe_avb_time(adapter);
-
-    u32 pres_time = cpu_to_be32((u32)((safe_now + 300000) & 0xFFFFFFFF));
+    // Application de l'offset dynamique
+    u32 pres_time = cpu_to_be32((u32)((safe_now + PRESENTATION_TIME_OFFSET) & 0xFFFFFFFF));
+    // LAUNCH_OFFSET est normalement défini à 125000 (125us)
+    u64 launch_time_ns = safe_now + LAUNCH_OFFSET;
 
     // On remplit le batch de streams de manière ordonnée (0, 1, 2, 3...)
     for (s = 0; s < NUMBER_OF_STREAMS; s++)
@@ -775,12 +847,10 @@ void handle_tx_packet(struct igb_adapter *adapter)
         // --- GESTION DES COMPTEURS AVB ---
         pavpdu->sequence_number = adapter->tx_seq[s]++;
         pavpdu->data_block_continuity = adapter->tx_dbc[s];
-        adapter->tx_dbc[s] = (adapter->tx_dbc[s] + samples_per_packet) % 256;
-
+        adapter->tx_dbc[s] = (adapter->tx_dbc[s] + samples_per_packet) & 0xFF;
         pavpdu->timestamp = pres_time;
         pavpdu->flags1 = 0x02; // AVTP subtype audio
         pavpdu->flags2 = 0x01; // Gateway info / valid
-
         // Mapping ALSA : s=0 est Canal 1-8, s=1 est 9-16...
         int base_channel = s * 8;
 
@@ -788,7 +858,6 @@ void handle_tx_packet(struct igb_adapter *adapter)
         int start_sample = oldpptr / adapter->playback_channels;
         int count1 = samples_per_packet;
         int count2 = 0;
-
         if (adapter->playback && (start_sample + samples_per_packet > adapter->playback_buffer_size))
         {
             count2 = start_sample + samples_per_packet - adapter->playback_buffer_size;
@@ -847,8 +916,7 @@ void handle_tx_packet(struct igb_adapter *adapter)
         // --- DESCRIPTEUR MATÉRIEL ---
         struct igb_avb_tx_desc *tx_desc = &((struct igb_avb_tx_desc *)adapter->tx_ring[0]->desc)[tx_idx % (MAXDESCRIPTORS >> 1)];
         u64 paylen = (u64)(50 + 8 * samples_per_packet * 4);
-
-        tx_desc->launch_time = 0; // Mode ASAP pour laisser le shaper lisser
+        tx_desc->launch_time = cpu_to_le32((u32)(launch_time_ns & 0xFFFFFFFF));
         tx_desc->addr = cpu_to_le64(adapter->tx_physaddr + MAXPACKETSIZE * tx_idx);
         tx_desc->cmd1 = cpu_to_le64(E1000_ADVTXD_DCMD_DEXT | E1000_ADVTXD_DTYP_CTXT);
         tx_desc->cmd2 = cpu_to_le64((paylen << 46) | E1000_ADVTXD_DCMD_EOP | E1000_ADVTXD_DCMD_RS |
@@ -860,6 +928,7 @@ void handle_tx_packet(struct igb_adapter *adapter)
     {
         adapter->hw_playback_pointer = (oldpptr + samples_per_packet * adapter->playback_channels) %
                                        (adapter->playback_buffer_size * adapter->playback_channels);
+
         adapter->p_cnt += samples_per_packet;
         if (adapter->p_cnt >= adapter->playback_period_size)
         {
@@ -880,6 +949,7 @@ void snd_avb_receive(struct igb_adapter *adapter)
     int tmp = adapter->rx_ring[1]->next_to_clean;
     union e1000_adv_rx_desc *rx_desc = adapter->rx_ring[1]->desc;
     int samples_per_packet = adapter->samples_per_packet;
+    int MAXDESCRIPTORS = adapter->tx_ring_count;
 
     // On traite tout ce qui est disponible dans le ring RX
     while (rx_desc[tmp].wb.upper.status_error & 1)
